@@ -1,8 +1,12 @@
 package com.hjh.test.jedis.lock;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 import redis.clients.jedis.Jedis;
 
@@ -13,16 +17,27 @@ import redis.clients.jedis.Jedis;
  */
 public class ReLock implements AutoCloseable {
 	// 记录本地所有被锁的key,左右类似二级缓存
-	private static final Set<String> LOCAL_LOCK_SET = ConcurrentHashMap.<String>newKeySet(); 
+	private static final Set<String> SYSTEM_LOCAL_LOCK_SET = ConcurrentHashMap.<String>newKeySet();
 
 	// 锁定时间20秒
 	private static final int LOCK_TIME = 20000;
-	
+
 	// 守护线程循环执行时间
 	private static final int HALF_LOCK_TIME = LOCK_TIME / 2;
-	
+
 	// 线程循环等待时间
 	private static final int THREAD_WAIT_TIME = 100;
+
+	private static final ExecutorService executorService = Executors.newCachedThreadPool();
+
+	// ThreadLocal<HashMap<String, GuardianThread>> tLocal = new
+	// ThreadLocal<>();
+
+	private GuardianRun gRun;
+	private Jedis jedis;
+	private String lockKey;
+	private int waitTime;
+
 
 	public ReLock(Jedis jedis, String lockKey, int waitTime) {
 		this.jedis = jedis;
@@ -30,20 +45,14 @@ public class ReLock implements AutoCloseable {
 		this.waitTime = waitTime;
 	}
 
-	private Jedis jedis;
-	private String lockKey;
-	private int waitTime;
-
 	private String requestId = UUID.randomUUID().toString();
-
-	private GuardianThread gThread = null;
 
 	public boolean tryLock() {
 		// 设置停止时间
 		long stopTime = System.currentTimeMillis() + waitTime;
 
 		// 检测本地是否已经有被锁.如果有,就循环等待,直到超过等待时间;如果没有,就调用redis判断有没有被其它服务器锁了.
-		while (LOCAL_LOCK_SET.equals(lockKey)) {
+		while (SYSTEM_LOCAL_LOCK_SET.equals(lockKey)) {
 			// 如果超过等待时间,就返回false
 			if (System.currentTimeMillis() > stopTime) {
 				return false;
@@ -51,6 +60,7 @@ public class ReLock implements AutoCloseable {
 			// 睡一会儿再来循环
 			try {
 				Thread.sleep(THREAD_WAIT_TIME);
+				System.out.println("key被其它线程锁住了");
 			} catch (InterruptedException e) {
 				e.printStackTrace();// TODO:需要处理吗?
 			}
@@ -71,14 +81,12 @@ public class ReLock implements AutoCloseable {
 		}
 
 		// 加入到锁列表缓存
-		LOCAL_LOCK_SET.add(lockKey);
-
-		System.out.println("锁定成功!");
+		SYSTEM_LOCAL_LOCK_SET.add(lockKey);
 
 		// 创建自延寿命守护线程
-		gThread = new GuardianThread();
+		gRun = new GuardianRun();
 		// 启动守护线程
-		gThread.start();
+		executorService.execute(gRun);
 
 		return true;
 	}
@@ -93,22 +101,20 @@ public class ReLock implements AutoCloseable {
 
 		System.out.println("执行解锁!");
 
-		if (gThread != null && gThread.isAlive()) {
-			gThread.setStop();
+		// 停止守护
+		gRun.setStop();
+
+		while (!gRun.getStopSuccess()) {
+			// 睡一会儿再来循环
+			try {
+				Thread.sleep(THREAD_WAIT_TIME);
+			} catch (InterruptedException e) {
+				e.printStackTrace();// TODO:需要处理吗?
+			}
 		}
 
-		int i = 0;
-		// 循环等待线程被关闭
-		try {
-			// TODO:这个用这个时间太长了,关闭守护线程不用这么久
-			gThread.join(THREAD_WAIT_TIME);
-		} catch (InterruptedException e1) {
-			// TODO:需要处理吗?
-			e1.printStackTrace();
-		}
-		
 		// TODO:头痛,不知道要先删本地缓存再删远程还是反过来,是否需要判断结果......
-		boolean isLocalUnlock = LOCAL_LOCK_SET.remove(lockKey);
+		boolean isLocalUnlock = SYSTEM_LOCAL_LOCK_SET.remove(lockKey);
 
 		// 调用Redis解锁
 		boolean isUnlock = RedisTool.releaseDistributedLock(jedis, lockKey, requestId);
@@ -118,10 +124,8 @@ public class ReLock implements AutoCloseable {
 
 	@Override
 	protected void finalize() throws Throwable {
-		if (gThread != null) {
-			if (gThread.isAlive()) {
-				gThread.setStop();
-			}
+		if (gRun != null) {
+			gRun.setStop();
 		}
 		super.finalize();
 	}
@@ -144,8 +148,11 @@ public class ReLock implements AutoCloseable {
 	 * @author HJH
 	 *
 	 */
-	class GuardianThread extends Thread {
+	class GuardianRun implements Runnable {
+		// 判断是否停止
 		private boolean isStop = false;
+		// 是否停止成功
+		private boolean stopSuccess = false;
 
 		@Override
 		public void run() {
@@ -154,32 +161,40 @@ public class ReLock implements AutoCloseable {
 					Thread.sleep(HALF_LOCK_TIME);
 
 					if (isStop) {
+						stopSuccess = true;
 						return;
 					}
-					
+
 					// 延长生命!
 					boolean lookSuccess = RedisTool.tryGetXXDistributedLock(jedis, lockKey, requestId, LOCK_TIME);
 					if (!lookSuccess) {
+						setStop();
 						throw new RuntimeException("锁定的值不存在了");
 					}
-					
+
 					System.out.println("延长生命!");
 				} catch (InterruptedException e) {
 					System.out.println("被强制退出阻塞了!");
 				}
 			}
-			System.out.println("停止生命!");
+			stopSuccess = true;
 		}
 
-		@Override
-		public synchronized void start() {
-			isStop = false;
-			super.start();
-		}
-
-		public void setStop() {
+		/**
+		 * 设置停止
+		 */
+		public synchronized void setStop() {
 			isStop = true;
-			this.interrupt();
+			// this.interrupt();
+		}
+
+		/**
+		 * 是否停止成功
+		 * 
+		 * @return
+		 */
+		public Boolean getStopSuccess() {
+			return stopSuccess;
 		}
 	}
 
