@@ -17,19 +17,21 @@ public class ApplicationStart {
 
 		for (int i = 0; i < 2; i++) {
 			System.out.println("启动线程" + i);
+			
+			final int k = i;
 			Thread t = new Thread(new Runnable() {
 				@Override
 				public void run() {
-					try (ReLock reLock = new ReLock(jedis, "ttt111222", 2000)) {
+					try (ReLock reLock = new ReLock(jedis, "ttt111222"+k, 2000)) {
 						boolean isLock = reLock.tryLock();
 
 						if (!isLock) {
-							throw new Exception("3秒锁不到啊啊啊啊啊");
+							throw new Exception("2秒锁不到啊啊啊啊啊");
 						}
 
-						System.out.println("开始睡30秒");
-						Thread.sleep(20000);
-						System.out.println("睡完30秒");
+						System.out.println("开始睡10秒");
+						Thread.sleep(10000);
+						System.out.println("睡完10秒");
 
 					} catch (Exception e) {
 						e.printStackTrace();
@@ -41,7 +43,7 @@ public class ApplicationStart {
 			});
 			t.start();
 			
-			Thread.sleep(500);
+			Thread.sleep(10);
 		}
 
 	}

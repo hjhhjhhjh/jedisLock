@@ -1,7 +1,5 @@
 package com.hjh.test.jedis.lock;
 
-import java.util.HashMap;
-import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -38,7 +36,6 @@ public class ReLock implements AutoCloseable {
 	private String lockKey;
 	private int waitTime;
 
-
 	public ReLock(Jedis jedis, String lockKey, int waitTime) {
 		this.jedis = jedis;
 		this.lockKey = lockKey;
@@ -51,25 +48,33 @@ public class ReLock implements AutoCloseable {
 		// 设置停止时间
 		long stopTime = System.currentTimeMillis() + waitTime;
 
+		// 设置本地缓存锁住key
+		boolean isSetSystemLocalSuccess = SYSTEM_LOCAL_LOCK_SET.add(lockKey);
 		// 检测本地是否已经有被锁.如果有,就循环等待,直到超过等待时间;如果没有,就调用redis判断有没有被其它服务器锁了.
-		while (SYSTEM_LOCAL_LOCK_SET.equals(lockKey)) {
-			// 如果超过等待时间,就返回false
-			if (System.currentTimeMillis() > stopTime) {
-				return false;
-			}
-			// 睡一会儿再来循环
-			try {
-				Thread.sleep(THREAD_WAIT_TIME);
+		if (!isSetSystemLocalSuccess) {
+			while (SYSTEM_LOCAL_LOCK_SET.contains(lockKey)) {
 				System.out.println("key被其它线程锁住了");
-			} catch (InterruptedException e) {
-				e.printStackTrace();// TODO:需要处理吗?
+
+				// 如果超过等待时间,就返回false
+				if (System.currentTimeMillis() > stopTime) {
+					return false;
+				}
+				// 睡一会儿再来循环
+				try {
+					Thread.sleep(THREAD_WAIT_TIME);
+				} catch (InterruptedException e) {
+					e.printStackTrace();// TODO:需要处理吗?
+				}
 			}
 		}
 
 		// 获取锁,如果没有成功获取就继续获取,如果没获取成功,就循环等待,直到超过等待时间
 		while (!RedisTool.tryGetNXDistributedLock(jedis, lockKey, requestId, LOCK_TIME)) {
+			System.out.println("key被其它应用锁住了");
+
 			// 如果超过等待时间,就返回false
 			if (System.currentTimeMillis() > stopTime) {
+				SYSTEM_LOCAL_LOCK_SET.remove(lockKey);
 				return false;
 			}
 			// 睡一会儿再来循环
@@ -79,10 +84,6 @@ public class ReLock implements AutoCloseable {
 				e.printStackTrace();// TODO:需要处理吗?
 			}
 		}
-
-		// 加入到锁列表缓存
-		SYSTEM_LOCAL_LOCK_SET.add(lockKey);
-
 		// 创建自延寿命守护线程
 		gRun = new GuardianRun();
 		// 启动守护线程
@@ -100,16 +101,17 @@ public class ReLock implements AutoCloseable {
 		// TODO:如果t有抛出了上面那个RuntimeException("锁定的值不存在了");怎么处理?
 
 		System.out.println("执行解锁!");
+		if (gRun != null) {
+			// 停止守护
+			gRun.setStop();
 
-		// 停止守护
-		gRun.setStop();
-
-		while (!gRun.getStopSuccess()) {
-			// 睡一会儿再来循环
-			try {
-				Thread.sleep(THREAD_WAIT_TIME);
-			} catch (InterruptedException e) {
-				e.printStackTrace();// TODO:需要处理吗?
+			while (!gRun.getStopSuccess()) {
+				// 睡一会儿再来循环
+				try {
+					Thread.sleep(THREAD_WAIT_TIME);
+				} catch (InterruptedException e) {
+					e.printStackTrace();// TODO:需要处理吗?
+				}
 			}
 		}
 
