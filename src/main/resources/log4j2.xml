@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Configuration status="info" monitorInterval="300">
+	<Properties>
+        <Property name="LOG_PATH">/apps/logs/jedisLock</Property>
+        <!-- <Property name="LOG_PATH">/apps/logs/kkkkkk</Property> -->
+		<Property name="MAX_FILE_SIZE">100 MB</Property>
+		<Property name="MAX_HISTORY">10</Property>
+		<!-- 定义属性 -->
+	</Properties>
+	<Appenders>
+		<Console name="Console" target="SYSTEM_OUT">
+			<PatternLayout pattern="[%t] %-d{yyyy-MM-dd HH:mm:ss:SSS}(%c:%line) - [%5p] %m%n" />
+		</Console>
+
+		<RollingFile name="InfoFile" fileName="${LOG_PATH}/info.log"
+			filePattern="${LOG_PATH}/info_%d{yyyy-MM-dd}-%i.log">
+			<ThresholdFilter level="debug" onMatch="ACCEPT"
+				onMismatch="DENY" />
+			<PatternLayout pattern="%date{yyyy-MM-dd HH:mm:ss.SSS} %level [%thread][%class{36}:%line] - %msg%n" />
+			<Policies>
+				<TimeBasedTriggeringPolicy interval="1"	modulate="true" />
+				<SizeBasedTriggeringPolicy size="${MAX_FILE_SIZE}" />
+			</Policies>
+		</RollingFile>
+
+		<RollingFile name="ErrorFile" fileName="${LOG_PATH}/error.log"
+			filePattern="${LOG_PATH}/error-%d{yyyy-MM-dd}-%i.log">
+			<ThresholdFilter level="error" onMatch="ACCEPT"
+				onMismatch="DENY" />
+			<PatternLayout pattern="%date{yyyy-MM-dd HH:mm:ss.SSS} %level [%thread][%class{36}:%line] - %msg%n" />
+			<Policies>
+				<TimeBasedTriggeringPolicy interval="1"	modulate="true" />
+				<SizeBasedTriggeringPolicy size="${MAX_FILE_SIZE}" />
+			</Policies>
+		</RollingFile>
+
+	</Appenders>
+	<Loggers>
+		
+        
+		<Root level="debug">
+			<AppenderRef ref="Console" />
+			<AppenderRef ref="InfoFile" />
+			<AppenderRef ref="ErrorFile" />
+		</Root>
+	</Loggers>
+</Configuration>
