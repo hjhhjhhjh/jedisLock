@@ -15,13 +15,13 @@ import redis.clients.jedis.ShardedJedis;
  */
 public class ApplicationStart {
 	private final static Logger logger = LoggerFactory.getLogger(ApplicationStart.class);
-	
+
 	public static void main(String[] args) throws Throwable {
-		
+
 		// Jedis jedis = new Jedis("192.168.2.247", 6379);
 		Thread.currentThread().setName("main thread");
 		JedisPoolConfig config = new JedisPoolConfig();
-		config.setMaxTotal(100);
+		config.setMaxTotal(2000);
 		config.setMaxIdle(10);
 		config.setMaxWaitMillis(30000);
 		config.setTestOnBorrow(true);
@@ -37,9 +37,8 @@ public class ApplicationStart {
 		// logger.info(str);
 
 		ReLockFactory reLockFactory = new ReLockFactory();
-		
-		
-		for (int i = 0; i < 3; i++) {
+
+		for (int i = 0; i < 2000; i++) {
 			logger.info("启动线程" + i);
 
 			final int k = i;
@@ -49,11 +48,13 @@ public class ApplicationStart {
 					logger.info(Thread.currentThread().getName() + ":" + "线程" + k + "开始获取资源");
 					Jedis jedis = jp.getResource();
 					logger.info(Thread.currentThread().getName() + ":" + "线程" + k + "获取到资源");
-					try (ReLock reLock = reLockFactory.getResource(jedis, "ttt111222" + "", 10000)) {
+
+					int lockWaitTime = 10;
+					try (ReLock reLock = reLockFactory.getResource(jedis, "ttt111222" + k, lockWaitTime * 1000)) {
 						boolean isLock = reLock.tryLock();
 
 						if (!isLock) {
-							throw new Exception("2秒锁不到啊啊啊啊啊");
+							throw new Exception(lockWaitTime + "秒锁不到啊啊啊啊啊");
 						}
 
 						int i = 1;
@@ -67,17 +68,18 @@ public class ApplicationStart {
 					} finally {
 						// TODO: handle finally clause
 					}
-					//logger.info(Thread.currentThread().getName() + ":" + "jedis.close()");
-					//jedis.close();
+					// logger.info(Thread.currentThread().getName() + ":" +
+					// "jedis.close()");
+					// jedis.close();
 				}
 			});
 			t.start();
 			logger.info(Thread.currentThread().getName() + "已启动");
 			Thread.sleep(10);
-			
+
 		}
-		Thread.sleep(11000);
+		//Thread.sleep(11000);
 		reLockFactory.close();
-		
+
 	}
 }

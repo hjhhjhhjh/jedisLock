@@ -6,8 +6,10 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 
+import org.apache.logging.log4j.core.util.UuidUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
 import redis.clients.jedis.Jedis;
 
@@ -50,6 +52,12 @@ public class ReLock implements AutoCloseable {
 		return lockStatus;
 	}
 
+	private String name;
+
+	public String getName() {
+		return name;
+	}
+
 	public ReLock(Jedis jedis, String lockKey, int waitTime, int lockTime, ExecutorService executorService) {
 		this.jedis = jedis;
 		this.lockKey = lockKey;
@@ -59,6 +67,10 @@ public class ReLock implements AutoCloseable {
 		this.executorService = executorService;
 
 		halfLockTime = lockTime / 2;
+
+		this.name = UuidUtil.getTimeBasedUuid().randomUUID().toString();
+		logger.debug("UUID是{}", this.name);
+		MDC.put("requestId", this.name);
 	}
 
 	private String requestId = UUID.randomUUID().toString();
@@ -68,52 +80,79 @@ public class ReLock implements AutoCloseable {
 		long stopTime = System.currentTimeMillis() + waitTime;
 
 		// 设置本地缓存锁住key
-		boolean isSetSystemLocalSuccess = SYSTEM_LOCAL_LOCK_SET.add(lockKey);
+		boolean isSetSystemLocalSuccess = getSystemLocalLock();
 		// 检测本地是否已经有被锁.如果有,就循环等待,直到超过等待时间;如果没有,就调用redis判断有没有被其它服务器锁了.
-		if (!isSetSystemLocalSuccess) {
-			while (SYSTEM_LOCAL_LOCK_SET.contains(lockKey)) {
-				logger.debug("key被其它线程锁住了");
 
-				// 如果超过等待时间,就返回false
-				if (System.currentTimeMillis() > stopTime) {
-					return false;
-				}
-				// 睡一会儿再来循环
-				try {
-					Thread.sleep(THREAD_WAIT_TIME);
-				} catch (InterruptedException e) {
-					e.printStackTrace();// TODO:需要处理吗?
-				}
-			}
-		}
-
-		// 获取锁,如果没有成功获取就继续获取,如果没获取成功,就循环等待,直到超过等待时间
-		while (!RedisTool.tryGetNXDistributedLock(jedis, lockKey, requestId, lockTime)) {
-			logger.debug("key被其它应用锁住了");
-
-			// 如果超过等待时间,就返回false
-			if (System.currentTimeMillis() > stopTime) {
-				SYSTEM_LOCAL_LOCK_SET.remove(lockKey);
-				return false;
-			}
-			// 睡一会儿再来循环
-			try {
-				Thread.sleep(THREAD_WAIT_TIME);
-			} catch (InterruptedException e) {
-				e.printStackTrace();// TODO:需要处理吗?
-			}
+		boolean isLockTrue = doLock(stopTime, isSetSystemLocalSuccess);
+		if (!isLockTrue) {
+			return isLockTrue;
 		}
 
 		logger.debug("获取到锁");
 		logger.debug("jedis.get(lockKey) = {}", jedis.get(lockKey));
 
+		lockStatus = LockStatus.IsLook;
+		
 		// 创建自延寿命守护线程
 		gRun = new GuardianRun(this);
 		// 启动守护线程
 		executorService.execute(gRun);
 
-		lockStatus = LockStatus.IsLook;
 		return true;
+	}
+
+	private boolean getSystemLocalLock() {
+		boolean isTrue = SYSTEM_LOCAL_LOCK_SET.add(lockKey);
+		;
+		if (isTrue) {
+			logger.debug("key={}获取到本地锁", lockKey);
+		}
+		return isTrue;
+	}	
+	
+
+	/**
+	 * 获取锁
+	 * 
+	 * @param stopTime
+	 *            停止时间
+	 * @param isSetSystemLocalSuccess
+	 *            是否
+	 * @return
+	 */
+	private boolean doLock(long stopTime, boolean isSetSystemLocalSuccess) {
+		// 如果超过等待时间,就返回false
+		if (System.currentTimeMillis() > stopTime) {
+			// 如果是自己拿到锁就解锁
+			if (isSetSystemLocalSuccess) {
+				SYSTEM_LOCAL_LOCK_SET.remove(lockKey);
+			}
+			return false;
+		}
+
+		// 判断本地是否有获取到锁
+		if (!isSetSystemLocalSuccess) {
+			// 检测本地是否已经有被锁
+			boolean isTrue = getSystemLocalLock();
+			if (!isTrue) {
+				logger.trace("获取不到锁睡一会儿再来递归");
+				// 睡一会儿再来递归
+				threadSleep(THREAD_WAIT_TIME);
+
+				return doLock(stopTime, false);
+			}
+			logger.debug("获取到本地锁");
+		}
+
+		// 获取远程锁
+		if (RedisTool.tryGetNXDistributedLock(jedis, lockKey, requestId, lockTime)) {
+			logger.debug("远程没有锁,并且拿到锁");
+			return true;
+		}
+
+		// 睡一会儿再来递归
+		threadSleep(THREAD_WAIT_TIME);
+		return doLock(stopTime, true);
 	}
 
 	/**
@@ -122,13 +161,14 @@ public class ReLock implements AutoCloseable {
 	 * @return 是否解锁成功
 	 */
 	public boolean unlock() {
+		logger.debug("执行解锁!");
+		
 		// 如果没锁住,直接返回成功
 		if (!this.lockStatus.equals(LockStatus.IsLook)) {
+			logger.debug("本来就没有锁到!");
 			return true;
 		}
-
-		// TODO:如果t有抛出了上面那个RuntimeException("锁定的值不存在了");怎么处理?
-		logger.debug("执行解锁!");
+		
 
 		// TODO:头痛,不知道要先删本地缓存再删远程还是反过来,是否需要判断结果......
 		boolean isLocalUnlock = SYSTEM_LOCAL_LOCK_SET.remove(lockKey);
@@ -178,6 +218,15 @@ public class ReLock implements AutoCloseable {
 		}
 	}
 
+	private void threadSleep(int sleepTime) {
+		// 睡一会儿再来递归
+		try {
+			Thread.sleep(sleepTime);
+		} catch (InterruptedException e) {
+			logger.debug("sleep被打断了抛出异常", e);
+		}
+	}
+
 	/**
 	 * 守护线程
 	 * 
@@ -198,6 +247,8 @@ public class ReLock implements AutoCloseable {
 
 		@Override
 		public void run() {
+			MDC.put("requestId", reLock.getName());
+			logger.debug("{}启动了{}线程", reLock.getName(), Thread.currentThread().getName());
 			int i = 0;
 			while (!isStop) {
 				try {

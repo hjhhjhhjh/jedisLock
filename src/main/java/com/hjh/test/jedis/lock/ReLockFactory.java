@@ -8,7 +8,7 @@ import redis.clients.jedis.Jedis;
 public class ReLockFactory implements AutoCloseable {
 
 	// 锁定时间2秒,守护线程等于这个时间除以2
-	private int lockTime = 1000;
+	private int lockTime = 2000;
 
 	// 守护线程线程池
 	private ExecutorService executorService = Executors.newCachedThreadPool();

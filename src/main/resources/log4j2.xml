@@ -16,7 +16,7 @@
 			filePattern="${LOG_PATH}/info_%d{yyyy-MM-dd}-%i.log">
 			<ThresholdFilter level="debug" onMatch="ACCEPT"
 				onMismatch="DENY" />
-			<PatternLayout pattern="%date{yyyy-MM-dd HH:mm:ss.SSS} %level [%thread][%class{36}:%line] - %msg%n" />
+			<PatternLayout pattern="%X{requestId} - %date{yyyy-MM-dd HH:mm:ss.SSS} %level [%thread][%class{36}:%line] - %msg%n" />
 			<Policies>
 				<TimeBasedTriggeringPolicy interval="1"	modulate="true" />
 				<SizeBasedTriggeringPolicy size="${MAX_FILE_SIZE}" />
